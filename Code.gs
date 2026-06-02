@@ -15,7 +15,7 @@
  *   - กันสร้างซ้ำด้วย iCalUID = booking no. (รันซ้ำ = อัปเดตของเดิม)
  */
 
-var CALENDAR_ID = "primary";                      // ปฏิทินปลายทาง
+var CALENDAR_NAME = "Export";                     // ชื่อปฏิทินปลายทาง (public topic) — แก้ชื่อตรงนี้ได้
 
 // [keyword ที่หาใน text, label ที่แสดง]
 // keyword ต่างที่ map ไป label เดียวกัน จะถูกรวมยอด (เช่น 'อมตะ' กับ 'Amata' → รวมเป็น Amata)
@@ -221,17 +221,31 @@ function getCalendarService() {
 }
 
 
+// หา Calendar ID จากชื่อปฏิทิน (CALENDAR_NAME) — ไม่ต้องก็อป ID ยาวๆ มาเอง
+function resolveCalendarId() {
+  var cals = CalendarApp.getCalendarsByName(CALENDAR_NAME);
+  if (!cals || !cals.length) {
+    throw new Error(
+      "ไม่พบปฏิทินชื่อ \"" + CALENDAR_NAME + "\"\n" +
+      "วิธีแก้: สร้างปฏิทินชื่อนี้ก่อน หรือเช็คว่าแชร์ให้บัญชีนี้ (สิทธิ์แก้ไข) เรียบร้อยแล้ว"
+    );
+  }
+  return cals[0].getId();
+}
+
+
 function pushToCalendar() {
   var ui = SpreadsheetApp.getUi();
   var chunks = splitBookings(getBookingText());
   var ok = [], failed = [];
   var cal = getCalendarService();
+  var calendarId = resolveCalendarId();          // ปฏิทิน "Export"
 
   chunks.forEach(function (chunk) {
     var b = parseBooking(chunk);
     if (b) {
       // import = idempotent ตาม iCalUID: รันซ้ำจะอัปเดต event เดิม ไม่สร้างใหม่
-      cal.Events.import(buildApiEvent(b), CALENDAR_ID);
+      cal.Events.import(buildApiEvent(b), calendarId);
       ok.push("BK " + b.bookingNo + "  " + dmyStr(b.loadDate) +
               "  " + b.containers + " ตู้  @" + (b.locations.join("+") || "?"));
     } else {

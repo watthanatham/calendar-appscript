@@ -15,7 +15,7 @@
  *   - กันสร้างซ้ำด้วย iCalUID = booking no. (รันซ้ำ = อัปเดตของเดิม)
  */
 
-var CALENDAR_NAME = "Export";                     // ชื่อปฏิทินปลายทาง (public topic) — แก้ชื่อตรงนี้ได้
+var CALENDAR_NAME = "My Calendar";                     // ชื่อปฏิทินปลายทาง (public topic) — แก้ชื่อตรงนี้ได้
 
 // [keyword ที่หาใน text, label ที่แสดง]
 // keyword ต่างที่ map ไป label เดียวกัน จะถูกรวมยอด (เช่น 'อมตะ' กับ 'Amata' → รวมเป็น Amata)

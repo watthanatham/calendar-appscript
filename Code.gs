@@ -234,9 +234,10 @@ function resolveCalendarId() {
 }
 
 
-function pushToCalendar() {
-  var ui = SpreadsheetApp.getUi();
-  var chunks = splitBookings(getBookingText());
+// แกนกลาง: รับ text (มี booking ได้หลายอัน) → import เข้า Calendar → คืน { ok, failed }
+// ใช้ร่วมกันทั้งเมนู (pushToCalendar) และ LINE webhook (doPost)
+function processBookings(text) {
+  var chunks = splitBookings(text);
   var ok = [], failed = [];
   var cal = getCalendarService();
   var calendarId = resolveCalendarId();          // ปฏิทิน "Export"
@@ -252,9 +253,121 @@ function pushToCalendar() {
       failed.push((chunk.split("\n")[0] || chunk).slice(0, 60));
     }
   });
+  return { ok: ok, failed: failed };
+}
 
-  var msg = "✓ ส่ง " + ok.length + " event เข้า Google Calendar\n\n" + ok.join("\n");
-  if (failed.length) msg += "\n\n⚠ parse ไม่ได้ " + failed.length + " รายการ:\n" + failed.join("\n");
-  if (!ok.length && !failed.length) msg = "ไม่พบ booking ในชีต (วางข้อความเริ่มที่ช่อง A1)";
-  ui.alert(msg);
+
+// ประกอบข้อความสรุป — ใช้ทั้ง ui.alert (เมนู) และ reply กลับ LINE
+function formatSummary(result) {
+  if (!result.ok.length && !result.failed.length) return "ไม่พบ booking (ต้องมีคำว่า BOOKING NO)";
+  var msg = "✓ บันทึก " + result.ok.length + " booking\n" + result.ok.join("\n");
+  if (result.failed.length) {
+    msg += "\n\n⚠ parse ไม่ได้ " + result.failed.length + " รายการ:\n" + result.failed.join("\n");
+  }
+  return msg;
+}
+
+
+function pushToCalendar() {
+  SpreadsheetApp.getUi().alert(formatSummary(processBookings(getBookingText())));
+}
+
+
+// ===== LINE webhook =====
+
+function getProp(name) {
+  return PropertiesService.getScriptProperties().getProperty(name);
+}
+
+
+// เขียน log ลงแท็บ "Log" ในชีต (อ่านง่ายกว่าเปิด Executions)
+function logRow(event, detail) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName("Log");
+  if (!sh) {
+    sh = ss.insertSheet("Log");
+    sh.appendRow(["เวลา", "เหตุการณ์", "รายละเอียด"]);
+  }
+  sh.appendRow([new Date(), event, detail]);
+}
+
+
+// health check: เปิด URL ในเบราว์เซอร์ (GET) จะเห็นรายงานสถานะระบบทุกจุด
+// (ไม่โชว์ token เต็ม โชว์แค่ความยาว เพื่อความปลอดภัย)
+function doGet(e) {
+  var lines = [];
+
+  var accessToken = getProp("LINE_CHANNEL_ACCESS_TOKEN");
+  lines.push("LINE_CHANNEL_ACCESS_TOKEN: " +
+    (accessToken ? "OK (length " + accessToken.length + ")" : "*** ไม่พบ / ยังไม่ได้ตั้ง ***"));
+
+  var webhookToken = getProp("LINE_WEBHOOK_TOKEN");
+  lines.push("LINE_WEBHOOK_TOKEN: " +
+    (webhookToken ? "OK (length " + webhookToken.length + ")" : "*** ไม่พบ / ยังไม่ได้ตั้ง ***"));
+
+  try {
+    getCalendarService();
+    lines.push("Advanced Calendar Service: OK");
+  } catch (err) {
+    lines.push("Advanced Calendar Service: *** ยังไม่ได้เปิด ***");
+  }
+
+  try {
+    var calId = resolveCalendarId();
+    lines.push("ปฏิทิน \"" + CALENDAR_NAME + "\": OK (" + calId + ")");
+  } catch (err) {
+    lines.push("ปฏิทิน \"" + CALENDAR_NAME + "\": *** ไม่พบ ***");
+  }
+
+  return ContentService.createTextOutput(lines.join("\n"));
+}
+
+
+// รับ POST จาก LINE — ตรวจ token ใน URL, แกะ events, ตอบกลับเฉพาะข้อความที่มี BOOKING NO
+// ต้องตอบ HTTP 200 เสมอ ไม่งั้น LINE จะ retry → โดนยิงซ้ำ
+function doPost(e) {
+  // กัน URL หลุด: ต้องมี ?token= ตรงกับ LINE_WEBHOOK_TOKEN (Apps Script อ่าน header ไม่ได้)
+  if (!e || !e.parameter || e.parameter.token !== getProp("LINE_WEBHOOK_TOKEN")) {
+    logRow("forbidden", "token ที่ LINE ส่งมา = " + (e && e.parameter ? e.parameter.token : "(ไม่มี ?token= ใน URL)"));
+    return ContentService.createTextOutput("forbidden");
+  }
+
+  var body;
+  try {
+    body = JSON.parse(e.postData.contents);
+  } catch (err) {
+    return ContentService.createTextOutput("bad request");
+  }
+
+  (body.events || []).forEach(function (ev) {
+    if (ev.type !== "message" || !ev.message || ev.message.type !== "text") return;
+    if (!/BOOKING\s*NO/i.test(ev.message.text)) return;   // ข้อความคุยเล่นอื่น → เงียบ
+
+    var reply;
+    try {
+      reply = formatSummary(processBookings(ev.message.text));
+    } catch (err) {
+      reply = "⚠ error: " + err.message;
+    }
+    replyMessage(ev.replyToken, reply);
+  });
+
+  return ContentService.createTextOutput("ok");
+}
+
+
+// ตอบกลับด้วย replyToken (ฟรี ไม่กินโควตา push) — token ใช้ได้ครั้งเดียว/อายุสั้น
+function replyMessage(replyToken, text) {
+  var resp = UrlFetchApp.fetch("https://api.line.me/v2/bot/message/reply", {
+    method: "post",
+    contentType: "application/json",
+    headers: { Authorization: "Bearer " + getProp("LINE_CHANNEL_ACCESS_TOKEN") },
+    payload: JSON.stringify({
+      replyToken: replyToken,
+      messages: [{ type: "text", text: text }],
+    }),
+    muteHttpExceptions: true,
+  });
+
+  logRow("LINE reply", "status " + resp.getResponseCode() + " | " + resp.getContentText());
 }
